@@ -1,0 +1,238 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# ══════════════════════════════════════════════════════════
+#  setup-chroot — Entorno Nativo Ubuntu/Debian (Root)
+#  Ejecutar UNA sola vez. Requiere internet.
+# ══════════════════════════════════════════════════════════
+
+FLAG="$HOME/.core_setup_done"
+if [ -f "$FLAG" ]; then
+    echo "Ya fue configurado. Borra /root/.core_setup_done para repetir."
+    exit 0
+fi
+
+PREFIX="/usr"
+HOME_DIR="/root"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+banner() {
+    clear
+    printf '\n'
+    printf '  \e[1;35m╔══════════════════════════════════════════════╗\e[0m\n'
+    printf '  \e[1;35m║  🚀  Setup completo de Termux Launcher       ║\e[0m\n'
+    printf '  \e[1;35m╚══════════════════════════════════════════════╝\e[0m\n\n'
+}
+
+log()  { printf '\n  \e[1;34m[%s/7]\e[0m %s\n' "$1" "$2"; }
+ok()   { printf '      \e[32m✔\e[0m  %s\n' "$1"; }
+warn() { printf '      \e[33m⚠\e[0m  %s\n' "$1"; }
+
+# ── 1. Scripts personales ──────────────────────────────────
+step_scripts() {
+    log 1 "Copiando scripts personales..."
+    mkdir -p "$HOME_DIR"
+    for f in horario.sh verificar-cod.sh gif-selector.sh fzf_clipboard_scratchpad.sh; do
+        src="$SCRIPT_DIR/scripts/$f"
+        if [ -f "$src" ]; then
+            cp "$src" "$HOME_DIR/$f" && chmod +x "$HOME_DIR/$f" && ok "$f"
+        else
+            warn "No encontrado: scripts/$f"
+        fi
+    done
+}
+
+# ── 2. Fastfetch ───────────────────────────────────────────
+step_fastfetch() {
+    log 2 "Instalando config Fastfetch (config.jsonc + descargas.gif)..."
+    mkdir -p "$HOME_DIR/.config/fastfetch"
+    for f in config.jsonc descargas.gif; do
+        src="$SCRIPT_DIR/fastfetch/$f"
+        if [ -f "$src" ]; then
+            cp "$src" "$HOME_DIR/.config/fastfetch/$f" && ok "$f"
+        else
+            warn "No encontrado: fastfetch/$f"
+        fi
+    done
+}
+
+# ── 3. Config .termux/ ─────────────────────────────────────
+step_termux_config() {
+    log 3 "Restaurando config .termux/..."
+    mkdir -p "$HOME_DIR/.termux/background" "$HOME_DIR/.termux/shell-integration"
+    cfg="$SCRIPT_DIR/termux_config"
+    for f in termux.properties termux-launcher-bindings.conf colors.properties font.ttf fonts.conf material-colors.sh material-colors.properties; do
+        [ -f "$cfg/$f" ] && cp "$cfg/$f" "$HOME_DIR/.termux/" && ok "$f"
+    done
+    [ -f "$cfg/background/background.jpeg" ] \
+        && cp "$cfg/background/background.jpeg" "$HOME_DIR/.termux/background/" && ok "background.jpeg"
+    [ -f "$cfg/shell-integration/termux-launcher.bash" ] \
+        && cp "$cfg/shell-integration/termux-launcher.bash" "$HOME_DIR/.termux/shell-integration/" && ok "termux-launcher.bash"
+    [ -f "$cfg/shell-integration/termux-launcher.zsh" ] \
+        && cp "$cfg/shell-integration/termux-launcher.zsh"  "$HOME_DIR/.termux/shell-integration/" && ok "termux-launcher.zsh"
+}
+
+# ── 4. Paquetes base ───────────────────────────────────────
+step_packages() {
+    log 4 "Actualizando e instalando paquetes base, glibc y herramientas Root/ADB..."
+    apt update -y && apt upgrade -y 2>/dev/null
+    
+    # Repositorios extra
+    # Repos no necesarios en Chroot nativo
+    pkg update -y 2>/dev/null
+    
+    # Paquetes base y glibc
+    # glibc es nativo aquí
+    
+    # Herramientas generales + Root + ADB
+    apt install -y fish git curl fzf sqlite3 cowsay nyancat yazi adb curl wget build-essential 2>/dev/null
+    
+    ok "Paquetes instalados (incluyendo sudo/tsu y ADB)"
+}
+
+# ── 5. setup-launcher (showcase oficial) ──────────────────
+step_setup_launcher() {
+    log 5 "Verificando showcase oficial (Fish, OhMyPosh, Neovim)..."
+    cd "$HOME_DIR" || true
+    
+    # Auto-reparación: Si el config.fish fue corrompido por el sed antiguo (falta la función base), lo borramos para forzar su regeneración.
+    if [ -f "$HOME_DIR/.config/fish/config.fish" ] && ! grep -q "function __move_cursor_to_bottom" "$HOME_DIR/.config/fish/config.fish"; then
+        rm -f "$HOME_DIR/.config/fish/config.fish"
+        warn "Se detectó un config.fish corrupto. Reparando..."
+    fi
+    
+    if [ -x "$HOME_DIR/.local/bin/fastfetch" ] && [ -f "$HOME_DIR/.config/fish/config.fish" ]; then
+        ok "El showcase ya está instalado. ¡Omitiendo descarga pesada! ⚡"
+    else
+        warn "Descargando e instalando showcase desde GitHub..."
+        curl -fsSLO https://raw.githubusercontent.com/PickleHik3/termux-launcher/main/docs/en/examples/setup-launcher
+        sh setup-launcher << 'EOF' >/dev/null 2>&1
+1
+y
+EOF
+        ok "Showcase instalado correctamente"
+    fi
+
+    # Enlaces globales
+    for bin in fastfetch sigye kitten setup-nvim; do
+        if [ -f "$HOME_DIR/.local/bin/$bin" ]; then
+            ln -sf "$HOME_DIR/.local/bin/$bin" "$PREFIX/bin/$bin"
+        fi
+    done
+}
+
+# ── 6. Fish config + fastfetch al arrancar ─────────────────
+step_fish_config() {
+    log 6 "Configurando Fish + fastfetch al arrancar..."
+    
+    # Redefinir el saludo directamente al final para un encuadre perfecto sin romper sintaxis
+    FISH_CFG="$HOME_DIR/.config/fish/config.fish"
+    if [ -f "$FISH_CFG" ]; then
+        # Limpiar cualquier arreglo anterior nuestro usando un bloque seguro
+        sed -i '/# INICIO_SALUDO_AGY/,/# FIN_SALUDO_AGY/d' "$FISH_CFG" 2>/dev/null
+        
+        cat >> "$FISH_CFG" << 'FISH_GREETING'
+
+# INICIO_SALUDO_AGY
+if status is-interactive
+    function fish_greeting
+        command clear
+        fastfetch 2>/dev/null
+    end
+end
+# FIN_SALUDO_AGY
+FISH_GREETING
+        ok "fastfetch añadido al inicio (fish_greeting)"
+    fi
+
+    PERSONAL="$HOME_DIR/.config/fish/conf.d/personal.fish"
+    mkdir -p "$HOME_DIR/.config/fish/conf.d"
+    touch "$PERSONAL"
+    # Sobrescribir siempre el archivo de alias para asegurar que estén actualizados
+    cat > "$PERSONAL" << 'PERSONAL_FISH'
+# === Configuración personal ===
+alias ll='ls -la'
+alias ..='cd ..'
+alias cls='clear'
+alias update='apt update -y && apt upgrade -y'
+alias horario='bash ~/horario.sh'
+alias gif='bash ~/gif-selector.sh'
+alias clip='bash ~/fzf_clipboard_scratchpad.sh'
+alias fix-media='fix-media'
+
+# Root & ADB
+alias s='sudo'
+alias adbs='adb shell'
+alias adbd='adb devices'
+alias adbw='adb tcpip 5555 && adb connect'
+alias codc='bash ~/verificar-cod.sh'
+alias sync-setup='cd ~/termux-chroot-setup && git pull && rm -f ~/.core_setup_done && ./setup-chroot'
+
+set -gx PATH $HOME/.local/bin $PATH
+PERSONAL_FISH
+    ok "Alias y rutas de sistema sincronizados (personal.fish)"
+
+
+    ln -sf "$PREFIX/bin/fish" "$HOME_DIR/.termux/shell" 2>/dev/null
+    
+    # Eliminar mensaje de bienvenida (MOTD) de Termux
+    touch "$HOME_DIR/.hushlogin"
+    rm -f "$PREFIX/etc/motd" 2>/dev/null
+    
+    ok "Fish → shell predeterminado (Mensaje de bienvenida ocultado)"
+}
+
+# ── 7. Core-Termux (al final) ──────────────────────────────
+step_core_termux() {
+    log 7 "Verificando Core-Termux y Agentes de IA..."
+    
+    if [ -x "$PREFIX/bin/core" ]; then
+        ok "Core-Termux ya está instalado. ¡Omitiendo reinstalación! ⚡"
+    else
+        warn "Instalando motor Core-Termux..."
+        curl -fsSL https://raw.githubusercontent.com/DevCoreXOfficial/core-termux/main/install.sh | bash >/dev/null 2>&1
+    fi
+    
+    if [ -x "$PREFIX/bin/core" ]; then
+        log 7.1 "Sincronizando módulos de IA (opencode, kilocode, freebuff, antigravity-cli)..."
+        "$PREFIX/bin/core" install ai --opencode --kilocode-cli --freebuff --antigravity-cli
+        ok "Asistentes de IA listos y actualizados 🤖"
+        
+        log 7.2 "Sincronizando herramientas Dev (core install dev)..."
+        "$PREFIX/bin/core" install dev
+        ok "Herramientas de desarrollo instaladas 🛠️"
+    else
+        warn "Fallo crítico: No se encontró 'core'. Saltando IA y Dev."
+    fi
+    ok "¡Ecosistema Core-Termux al 100%!"
+}
+
+# ══════════════════════════════════════════════════════════
+banner
+step_scripts
+step_fastfetch
+step_termux_config
+step_packages
+step_setup_launcher
+step_fish_config
+step_core_termux
+
+touch "$FLAG"
+
+clear
+echo ""
+cowsay "Todo listo. Reinicia la terminal." 2>/dev/null \
+    || printf '  \e[1;32m✅  Todo listo. Reinicia la terminal.\e[0m\n'
+echo ""
+printf '  \e[34m🐟 Shell:\e[0m       Fish (default)\n'
+printf '  \e[34m🎨 Fastfetch:\e[0m   corre al abrir terminal\n'
+printf '  \e[34m🌟 Showcase:\e[0m    Fish + OhMyPosh + Neovim + eza\n'
+printf '  \e[34m⚡ Core-Termux:\e[0m  instalado\n'
+printf '  \e[34m📋 Scripts:\e[0m     horario · gif-selector · portapapeles\n'
+echo ""
+nyancat 2>/dev/null &
+sleep 3
+kill %1 2>/dev/null
+echo ""
+printf '  \e[1;31mCerrando Termux en 3 segundos para aplicar los cambios...\e[0m\n'
+sleep 3
+# Mata el proceso padre (Termux) para que la app se cierre sola
+kill -9 $PPID
